@@ -7,6 +7,8 @@ from typing import Optional, Union
 
 from scapy.all import sniff, IP, IPv6, TCP, UDP, Raw, conf
 
+from cert_analyzer import get_security_issues, parse_cert_der
+from dns_cache import DNSCache
 from logger import SessionLogger
 from models import Protocol, QUICSession, TLSSession
 from parser import try_parse_quic, try_parse_tls
@@ -27,10 +29,17 @@ class TrafficAnalyzer:
         verbose: bool = False,
         no_color: bool = False,
         log_file: Optional[str] = None,
+        resolve_hosts: bool = True,
     ):
         self.interface = interface
         self.verbose = verbose
-        self.logger = SessionLogger(log_file=log_file, no_color=no_color)
+        self.dns_cache = DNSCache()
+        self.logger = SessionLogger(
+            log_file=log_file,
+            no_color=no_color,
+            resolve_hosts=resolve_hosts,
+            dns_cache=self.dns_cache,
+        )
         self.sessions: dict[tuple, Union[TLSSession, QUICSession]] = {}
         self.stats = defaultdict(int)
         self.start_time = datetime.now()
@@ -58,6 +67,7 @@ class TrafficAnalyzer:
                 return
 
         had_hello = session.client_hello_seen or session.server_hello_seen
+        had_sni = session.sni is not None
         found = try_parse_tls(payload, session)
 
         if not found and is_new:
@@ -69,12 +79,32 @@ class TrafficAnalyzer:
         self.stats["tls_sessions"] += 1 if is_new else 0
         self.stats["tls_packets"] += 1
 
+        # Parse certificate if freshly extracted
+        if session.cert_der is not None:
+            ci = parse_cert_der(session.cert_der)
+            session.cert_der = None
+            if ci:
+                session.cert_info = ci
+
+        # Recompute security issues after any new info
+        session.security_issues = get_security_issues(session)
+
+        sni_discovered = not had_sni and session.sni is not None
+        warn_needed = bool(session.security_issues) and not session.warn_logged
+
         if is_new and found:
             self.logger.log_session(session, "NEW")
         elif not had_hello and (session.client_hello_seen or session.server_hello_seen):
             self.logger.log_session(session, "HELLO")
+        elif sni_discovered:
+            self.logger.log_session(session, "SNI")
         elif self.verbose:
             self.logger.log_session(session, "PKT")
+
+        if warn_needed:
+            session.warn_logged = True
+            self.logger.log_session(session, "WARN")
+            self.stats["warn_sessions"] += 1
 
     def _handle_quic(self, src_ip, dst_ip, src_port, dst_port, payload: bytes):
         flow_key = self._make_flow_key(src_ip, dst_ip, src_port, dst_port)
@@ -108,6 +138,8 @@ class TrafficAnalyzer:
             self.logger.log_session(session, "PKT")
 
     def process_packet(self, pkt):
+        self.dns_cache.process_packet(pkt)
+
         if not pkt.haslayer(Raw):
             return
 
@@ -122,14 +154,12 @@ class TrafficAnalyzer:
         if pkt.haslayer(TCP):
             tcp = pkt[TCP]
             src_port, dst_port = tcp.sport, tcp.dport
-            # TLS typically on port 443, 8443, or any port with TLS record header
             if len(payload) >= 5:
                 self._handle_tls(src_ip, dst_ip, src_port, dst_port, payload)
 
         elif pkt.haslayer(UDP):
             udp = pkt[UDP]
             src_port, dst_port = udp.sport, udp.dport
-            # QUIC uses UDP; common ports: 443, 80 (HTTP/3)
             self._handle_quic(src_ip, dst_ip, src_port, dst_port, payload)
 
     def print_stats(self):
@@ -141,6 +171,8 @@ class TrafficAnalyzer:
         print(f"  QUIC sessions:  {self.stats['quic_sessions']}")
         print(f"  QUIC packets:   {self.stats['quic_packets']}")
         print(f"  Active flows:   {len(self.sessions)}")
+        if self.stats["warn_sessions"]:
+            print(f"  {_BOLD}\033[31mInsecure:       {self.stats['warn_sessions']}{_RESET}")
 
     def run(self):
         print(f"{_BOLD}{_GREEN}[*] Listening on {self.interface} — Ctrl+C to stop{_RESET}")

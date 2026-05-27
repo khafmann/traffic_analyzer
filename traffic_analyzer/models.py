@@ -3,6 +3,9 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional
 
+WARN_EXPIRY_DAYS = 30
+WEAK_CIPHER_KEYWORDS = ("null", "rc4", "_des_", "3des", "export", "_anon_")
+
 
 class Protocol(str, Enum):
     TLS = "TLS"
@@ -18,6 +21,8 @@ class TLSVersion(str, Enum):
     TLS_1_3 = "TLS 1.3"
     UNKNOWN = "Unknown"
 
+
+INSECURE_VERSIONS = {TLSVersion.SSL_3_0, TLSVersion.TLS_1_0, TLSVersion.TLS_1_1}
 
 VERSION_MAP = {
     0x0300: TLSVersion.SSL_3_0,
@@ -63,6 +68,19 @@ CIPHER_SUITE_NAMES = {
 
 
 @dataclass
+class CertInfo:
+    subject_cn: Optional[str] = None
+    issuer_cn: Optional[str] = None
+    not_after: Optional[datetime] = None
+    san: list[str] = field(default_factory=list)
+    sig_algorithm: str = ""
+    is_self_signed: bool = False
+    is_expired: bool = False
+    is_expiring_soon: bool = False
+    is_weak_sig: bool = False
+
+
+@dataclass
 class TLSSession:
     src_ip: str
     dst_ip: str
@@ -80,6 +98,10 @@ class TLSSession:
     client_hello_seen: bool = False
     server_hello_seen: bool = False
     packet_count: int = 0
+    cert_der: Optional[bytes] = field(default=None, repr=False)
+    cert_info: Optional[CertInfo] = None
+    security_issues: list[str] = field(default_factory=list)
+    warn_logged: bool = False
 
     @property
     def flow_key(self) -> tuple:

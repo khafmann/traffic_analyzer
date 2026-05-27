@@ -1,11 +1,11 @@
 import struct
-from typing import Optional
 
 from models import (
     CIPHER_SUITE_NAMES,
     EXT_ALPN,
     EXT_SNI,
     EXT_SUPPORTED_VERSIONS,
+    HS_CERTIFICATE,
     HS_CLIENT_HELLO,
     HS_SERVER_HELLO,
     TLS_HANDSHAKE,
@@ -150,6 +150,33 @@ def parse_server_hello(data: bytes, session: TLSSession) -> bool:
         return False
 
 
+def _extract_first_cert_der(data: bytes, session: TLSSession) -> bytes | None:
+    """Extract DER bytes of the first certificate from a Certificate handshake body."""
+    try:
+        offset = 0
+        # TLS 1.3 prepends a 1-byte certificate_request_context_length
+        if session.negotiated_version == TLSVersion.TLS_1_3:
+            ctx_len = data[offset]
+            offset += 1 + ctx_len
+
+        # uint24: total certificate_list length
+        if offset + 3 > len(data):
+            return None
+        offset += 3  # skip list length
+
+        # uint24: first certificate length
+        if offset + 3 > len(data):
+            return None
+        cert_len = struct.unpack_from("!I", b"\x00" + data[offset: offset + 3])[0]
+        offset += 3
+
+        if cert_len == 0 or offset + cert_len > len(data):
+            return None
+        return data[offset: offset + cert_len]
+    except (struct.error, IndexError):
+        return None
+
+
 def try_parse_tls(payload: bytes, session: TLSSession) -> bool:
     """Try to parse TLS records from raw TCP payload. Returns True if valid TLS found."""
     if len(payload) < 5:
@@ -187,6 +214,9 @@ def try_parse_tls(payload: bytes, session: TLSSession) -> bool:
                 found = True
             elif hs_type == HS_SERVER_HELLO:
                 parse_server_hello(hs_body, session)
+                found = True
+            elif hs_type == HS_CERTIFICATE and session.cert_der is None:
+                session.cert_der = _extract_first_cert_der(hs_body, session)
                 found = True
 
         offset = record_end
