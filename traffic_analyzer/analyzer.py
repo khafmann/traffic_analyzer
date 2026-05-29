@@ -26,16 +26,12 @@ class TrafficAnalyzer:
     def __init__(
         self,
         interface: str,
-        verbose: bool = False,
         no_color: bool = False,
-        log_file: Optional[str] = None,
         resolve_hosts: bool = True,
     ):
         self.interface = interface
-        self.verbose = verbose
         self.dns_cache = DNSCache()
         self.logger = SessionLogger(
-            log_file=log_file,
             no_color=no_color,
             resolve_hosts=resolve_hosts,
             dns_cache=self.dns_cache,
@@ -98,8 +94,6 @@ class TrafficAnalyzer:
             self.logger.log_session(session, "HELLO")
         elif sni_discovered:
             self.logger.log_session(session, "SNI")
-        elif self.verbose:
-            self.logger.log_session(session, "PKT")
 
         if warn_needed:
             session.warn_logged = True
@@ -134,8 +128,6 @@ class TrafficAnalyzer:
 
         if is_new:
             self.logger.log_session(session, "NEW")
-        elif self.verbose:
-            self.logger.log_session(session, "PKT")
 
     def process_packet(self, pkt):
         self.dns_cache.process_packet(pkt)
@@ -197,16 +189,12 @@ class TrafficAnalyzer:
 def main():
     parser = argparse.ArgumentParser(description="Real-time TLS/SSL/QUIC traffic analyzer")
     parser.add_argument("interface", help="Network interface to capture on (e.g. eth0, wlan0)")
-    parser.add_argument("-v", "--verbose", action="store_true", help="Show all packets, not just new sessions")
     parser.add_argument("--no-color", action="store_true", help="Disable color output")
-    parser.add_argument("--log-file", metavar="PATH", help="Append JSON-lines session log to this file")
     args = parser.parse_args()
 
     analyzer = TrafficAnalyzer(
         interface=args.interface,
-        verbose=args.verbose,
         no_color=args.no_color,
-        log_file=args.log_file,
     )
     analyzer.run()
 

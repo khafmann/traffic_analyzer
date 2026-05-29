@@ -1,8 +1,7 @@
-import json
 import logging
 import sys
 from datetime import datetime, timezone
-from typing import IO, Optional, Union
+from typing import Optional, Union
 
 from dns_cache import DNSCache
 from models import QUICSession, TLSSession
@@ -105,18 +104,13 @@ class SessionLogger:
 
     def __init__(
         self,
-        log_file: Optional[str] = None,
         no_color: bool = False,
         resolve_hosts: bool = True,
         dns_cache: Optional[DNSCache] = None,
     ):
         self.no_color = no_color
-        self._file: Optional[IO] = None
         self._resolver: Optional[ReverseDNSCache] = ReverseDNSCache() if resolve_hosts else None
         self._dns_cache: Optional[DNSCache] = dns_cache
-
-        if log_file:
-            self._file = open(log_file, "a", buffering=1)  # line-buffered
 
         logging.basicConfig(
             stream=sys.stderr,
@@ -134,7 +128,6 @@ class SessionLogger:
         "HELLO": "\033[33m",
         "SNI":   "\033[33m",
         "WARN":  "\033[1m\033[31m",
-        "PKT":   "\033[90m",
         "ts":    "\033[90m",
     }
 
@@ -157,13 +150,6 @@ class SessionLogger:
             line = self._colorize(line, record)
         print(line)
 
-        # JSON line to file
-        if self._file:
-            self._file.write(json.dumps(record, ensure_ascii=False) + "\n")
-
     def close(self) -> None:
         if self._resolver:
             self._resolver.close()
-        if self._file:
-            self._file.close()
-            self._file = None
